@@ -1,0 +1,15 @@
+# Copyrighted publisher PDFs (IEEE) -- kept locally for reference, never pushed
+references/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# LaTeX build artifacts (final_paper.pdf itself IS tracked)
+*.aux
+*.log
+*.bbl
+*.blg
+*.out
+*.synctex.gz
