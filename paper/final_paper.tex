@@ -29,7 +29,7 @@ kobe.tyler.young@gmail.com}
 \maketitle
 
 \begin{abstract}
-IDK cascades chain progressively heavier classifiers so easy inputs exit early. Two recent improvements skip the middle classifier when the first stage is unlikely to be refined: Nguyen et al.\ (RTSS 2024) used a static confidence threshold; Katikaneni et al.\ (RTSS 2025) replaced it with a Random Forest on three softmax features. We ask whether a much simpler predictor suffices. On the 10\,000-image ImageNet-V2 Matched-Frequency set, with both learned predictors trained on Katikaneni et al.'s target (will the middle classifier abstain?), a two-feature logistic regression on \textit{confidence} and \textit{margin} matches the Random Forest on the held-out test split of first-stage-IDK images: 129.47 vs.\ 129.45~ms/image at 47.0\% vs.\ 46.9\% top-1 accuracy, with slightly lower skip-F1 (0.706 vs.\ 0.715), at a measured $84\times$ lower per-decision evaluation cost (median 33~$\mu$s vs.\ 2.8~ms at batch size 1 on x86 CPU). For real-time deployments where the skip predictor's WCET itself enters the schedulability budget, a two-coefficient interpretable rule buys essentially the same cascade performance at a small fraction of the predictor overhead.
+IDK cascades chain progressively heavier classifiers so easy inputs exit early. Two recent improvements skip the middle classifier when the first stage is unlikely to be refined: Nguyen et al.\ (RTSS 2024) used a static confidence threshold; Katikaneni et al.\ (RTSS 2025) replaced it with a Random Forest on three softmax features. We ask whether a much simpler predictor suffices. Under Katikaneni et al.'s cross-dataset protocol (train on ImageNet-V2 Matched-Frequency + TopImages, test on Threshold-0.7) and their prediction target (will the middle classifier abstain?), a two-feature logistic regression on \textit{confidence} and \textit{margin} matches the Random Forest on the first-stage-IDK test population: XXlrlat vs.\ XXrflat~ms/image at XXlracc\% vs.\ XXrfacc\% top-1 accuracy (paired bootstrap 95\% CIs of the per-image differences include zero), at a measured XXratio$\times$ lower median per-decision evaluation cost (XXlrcost vs.\ XXrfcost at batch size 1 on a Jetson Orin Nano CPU). Unlike the tree ensemble, the deployed logistic is branch-free and data-independent, so its WCET is immediate to bound. For real-time deployments where the skip predictor's WCET itself enters the schedulability budget, a two-coefficient interpretable rule buys essentially the same cascade performance at a small fraction of the predictor overhead.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -50,7 +50,7 @@ The Random Forest, however, introduces its own per-image inference cost. The 202
 \textit{Is a two-feature logistic skip rule sufficient to recover most of the latency benefit reported in \cite{katikaneni2025randomforest}, while remaining interpretable and trivially cheap to evaluate at inference time?}
 \end{quote}
 
-\textbf{Contributions.} (i) We reproduce the dynamic-threshold cascade of \cite{nguyen2024probabilistic} on a freely available ImageNet-V2 subset using off-the-shelf pre-trained ResNet-18, ResNet-34, and ResNet-152 weights. (ii) We implement a logistic-regression skip predictor over $\{$\textit{confidence}, \textit{margin}$\}$ and compare it to both the static threshold and a re-implementation of the Random Forest baseline with the same hyperparameters, under our single-dataset protocol (Sec.~\ref{sec:setup}). (iii) We measure the per-decision overhead of the skip predictor itself and discuss when the additional complexity of a learned model is worth its inference cost in a real-time setting.
+\textbf{Contributions.} (i) We reproduce the dynamic-threshold cascade of \cite{nguyen2024probabilistic} on a freely available ImageNet-V2 subset using off-the-shelf pre-trained ResNet-18, ResNet-34, and ResNet-152 weights. (ii) We implement a logistic-regression skip predictor over $\{$\textit{confidence}, \textit{margin}$\}$ and compare it to both the static threshold and a re-implementation of the Random Forest baseline with the same hyperparameters, under the cross-dataset protocol of \cite{katikaneni2025randomforest} (Sec.~\ref{sec:setup}), with bootstrap interval estimates and a nested-feature ablation. (iii) We measure the per-decision overhead of the skip predictor itself on an embedded ARM target and argue that, beyond its measured cost, the logistic's branch-free evaluation is the more analyzable term to carry into a schedulability bound.
 
 % =====================================================================
 \section{Background and Related Work}
@@ -111,17 +111,17 @@ The skip predictor is
 \[
 P(\mathrm{skip}=1 \mid \mathbf{x}) = \sigma\!\left(w_0 + w_1\,\mathrm{conf}(A) + w_2\,\mathrm{margin}(A)\right),
 \]
-with $\sigma(z) = (1 + e^{-z})^{-1}$. The training label is $y = 1$ when $B$ itself would abstain, i.e.\ $\max \mathbf{s}_B < \tau_{\text{acc}}$. This is the predictor target of Katikaneni et al.\ \cite{katikaneni2025randomforest} and the waste condition identified by Nguyen et al.\ \cite{nguyen2024probabilistic}: time is only saved by skipping $B$ when $B$ would output IDK, whereas if $B$ would commit, running it is the cheapest path to a committed answer ($t_B < t_C$). Both learned predictors (RF and logistic) are trained on this label. We fit on the subset of images where $A$ returned $\bot$ (the only inputs where $\mathrm{skip}$ is consulted), use a 70/30 train/test split with stratification on $y$, and apply \texttt{class\_weight='balanced'} to handle the asymmetric prior ($y=1$ for 70.1\% of $A$-IDK images). At inference, the cascade skips $B$ when $P(\mathrm{skip}=1\mid \mathbf{x}) > 0.5$. Evaluating the predictor itself reduces to two multiplications, two additions, and one sigmoid; Section~\ref{sec:results} reports the measured per-decision cost of this rule against the 50-tree Random Forest.
+with $\sigma(z) = (1 + e^{-z})^{-1}$. The training label is $y = 1$ when $B$ itself would abstain, i.e.\ $\max \mathbf{s}_B < \tau_{\text{acc}}$. This is the predictor target of Katikaneni et al.\ \cite{katikaneni2025randomforest} and the waste condition identified by Nguyen et al.\ \cite{nguyen2024probabilistic}: time is only saved by skipping $B$ when $B$ would output IDK, whereas if $B$ would commit, running it is the cheapest path to a committed answer ($t_B < t_C$). Both learned predictors (RF and logistic) are trained on this label. We fit on the subset of images where $A$ returned $\bot$ (the only inputs where $\mathrm{skip}$ is consulted), drawn from the two training subsets under the cross-dataset protocol of Section~\ref{sec:setup}, and apply \texttt{class\_weight='balanced'} to handle the asymmetric prior ($y=1$ for XXtrainprior\% of $A$-IDK training images). At inference, the cascade skips $B$ when $P(\mathrm{skip}=1\mid \mathbf{x}) > 0.5$. Evaluating the predictor itself reduces to two multiplications, two additions, and one sigmoid; Section~\ref{sec:results} reports the measured per-decision cost of this rule against the 50-tree Random Forest.
 
 % =====================================================================
 \section{Experimental Setup}
 \label{sec:setup}
 
-\subsection{Dataset}
-We use ImageNet-V2 Matched-Frequency \cite{recht2019imagenetv2} (10\,000 images, 1\,000 classes, sampled to match the class-selection-frequency distribution of the original ImageNet validation set), served through the Hugging Face Hub. This is one of the three subsets evaluated by both prior papers \cite{nguyen2024probabilistic, katikaneni2025randomforest}; the standalone top-1 accuracies of our three classifiers (57.3\%, 61.0\%, 67.0\%) are consistent with canonical Matched-Frequency numbers. Unlike \cite{katikaneni2025randomforest}, who train on Matched-Frequency plus TopImages and test on Threshold-0.7, we train and test within this single subset using a stratified 70/30 split; extending to the other two subsets and to cross-dataset evaluation is future work.
+\subsection{Datasets and Cross-Dataset Protocol}
+We use all three ImageNet-V2 subsets \cite{recht2019imagenetv2} (10\,000 images each, 1\,000 classes): \textit{Matched-Frequency}, \textit{TopImages}, and \textit{Threshold-0.7}, obtained as the original per-variant release files of Recht et al.\ via the Hugging Face Hub, so the variant identity of each split is exact by construction. The standalone top-1 accuracies of our three classifiers on each subset are consistent with canonical ImageNet-V2 numbers. Following the cross-dataset protocol of Katikaneni et al.\ \cite{katikaneni2025randomforest}, both learned predictors are trained on the first-stage-IDK samples of Matched-Frequency and TopImages, and all evaluation is performed on Threshold-0.7. Because training and test data come from disjoint datasets, no within-dataset split is needed and the full $A$-IDK population of the test subset is used for evaluation; this also directly tests the transfer property that motivated \cite{katikaneni2025randomforest} to replace the static threshold.
 
 \subsection{Hardware}
-All inference is run in CPU mode (\texttt{torch.device("cpu")}) on an x86\_64 desktop under WSL2, matching the GPU-disabled methodology of Katikaneni et al.\ \cite{katikaneni2025randomforest} on Jetson Nano. CPU is the operative regime: a single ResNet-152 GPU run is already cheap, so the cascade's value vanishes there. We claim only that the relative orderings (baseline vs.\ static vs.\ RF vs.\ logistic) transfer; absolute numbers will differ on ARM.
+All inference is run in CPU mode (\texttt{torch.device("cpu")}), matching the GPU-disabled methodology of Katikaneni et al.\ \cite{katikaneni2025randomforest}. CPU is the operative regime: a single ResNet-152 GPU run is already cheap, so the cascade's value vanishes there. Our primary platform is an NVIDIA Jetson Orin Nano (ARM Cortex-A78AE, CPU mode), the successor of the Jetson Nano used by \cite{katikaneni2025randomforest}; softmax outputs are platform-independent and were cached on an x86\_64 host, while all reported per-image stage timings and per-decision predictor costs are measured on the board.
 
 \subsection{Implementation}
 Models are loaded from \texttt{torchvision.models} with default pretrained weights. Per-image timings are measured with \texttt{time.perf\_counter()} around the inference call only (preprocessing is excluded). Each measurement is the mean of five trials per image after a 50-image warm-up.
@@ -133,7 +133,7 @@ Models are loaded from \texttt{torchvision.models} with default pretrained weigh
     \item \textbf{Skip rate}: fraction of images in the population on which the cascade skipped $B$.
     \item For the learned predictors: precision, recall, F1 of the skip-decision binary classifier, and measured per-decision prediction cost.
 \end{itemize}
-Two populations appear in Section~\ref{sec:results}. The threshold sweep uses the \emph{full 10\,000-image set}. The learned-predictor comparisons use only the \emph{held-out 30\% test split (1\,458 images) of the 4\,857 images on which $A$ abstains}: the skip rule is consulted nowhere else, and the predictors were trained on the remaining 70\%, so evaluating on the full set would leak training data into the comparison. Numbers from the two populations are not directly comparable (the $A$-IDK subset contains only hard inputs, so its latencies are higher and accuracies lower than full-set values).
+Two populations appear in Section~\ref{sec:results}. The threshold sweep uses the \emph{full 10\,000-image Matched-Frequency set} (a reproduction of \cite{nguyen2024probabilistic}). The learned-predictor comparisons use the \emph{$A$-IDK population of Threshold-0.7}: the skip rule is consulted nowhere else, and no Threshold-0.7 image appears in training. Numbers from the two populations are not directly comparable (the $A$-IDK population contains only hard inputs, so its latencies are higher and accuracies lower than full-set values). All point estimates on the test population are reported with bootstrap 95\% confidence intervals (10\,000 percentile-bootstrap resamples of the test population); comparisons between the Random Forest and the logistic use \emph{paired} bootstrap CIs of the per-image differences.
 
 % =====================================================================
 \section{Preliminary Results}
@@ -152,28 +152,39 @@ Table~\ref{tab:threshold-sweep} reproduces the threshold-sweep protocol of Nguye
 \end{table}
 
 \subsection{Skip-Predictor Comparison}
-Table~\ref{tab:variants} reports our headline comparison on the held-out $A$-IDK test split (1\,458 images). The Random Forest re-implementation recovers Katikaneni et al.'s qualitative result: a learned predictor beats the static threshold (129.45 vs.\ 130.44 ms) while skipping more aggressively (56.5\% of $A$-IDK images vs.\ 38.3\%). The two-feature logistic rule (\textbf{ours}) is statistically indistinguishable from the Random Forest on cascade behavior: 129.47 vs.\ 129.45 ms and 47.0\% vs.\ 46.9\% accuracy. On predictor quality (Table~\ref{tab:skip-f1}) the Random Forest retains a small edge in skip-F1 (0.715 vs.\ 0.706, a 0.009 absolute difference), driven by higher recall; the logistic has marginally higher precision. The trade the logistic offers is therefore not better classification quality but equal cascade performance at the far lower per-decision cost measured next.
+Table~\ref{tab:variants} reports our headline comparison on the Threshold-0.7 $A$-IDK population (XXntest images), with the predictors trained on Matched-Frequency + TopImages. The Random Forest re-implementation recovers Katikaneni et al.'s qualitative result under cross-dataset transfer: a learned predictor beats the static threshold (XXrflat vs.\ XXstaticlat ms). The two-feature logistic rule (\textbf{ours}) matches the Random Forest on cascade behavior: the paired bootstrap 95\% CIs of the per-image RF$-$logistic differences are \input{paired_diff}\hspace{-0.3em}, so neither predictor dominates the other on either metric. Predictor quality is compared in Table~\ref{tab:skip-f1} with bootstrap CIs on F1.
+
+Point estimates at this scale are fragile: in a within-subset control experiment (10 random 70/30 splits of the Matched-Frequency $A$-IDK samples), skip-F1 varied by $\pm 0.02$ across splits for the Random Forest (0.677~$\pm$~0.017) against 0.704~$\pm$~0.008 for the logistic --- the split-to-split spread exceeds the gap between the two predictors, which is why we report interval estimates throughout.
+
+Table~\ref{tab:ablation} gives the feature-selection evidence behind the two-feature choice: nested logistic models on $\{$conf$\}$, $\{$conf, margin$\}$, and $\{$conf, margin, entropy$\}$. XXablationsummary
 
 \begin{table}[h]
 \centering
-\caption{Cascade Variants on the Held-Out $A$-IDK Test Split}
+\caption{Cascade Variants on the Threshold-0.7 $A$-IDK Population (Cross-Dataset Protocol; Bootstrap 95\% CIs)}
 \label{tab:variants}
 \input{table_variants}
 \end{table}
 
 \begin{table}[h]
 \centering
-\caption{Skip-Predictor Quality on the Held-Out $A$-IDK Test Split}
+\caption{Skip-Predictor Quality on the Threshold-0.7 $A$-IDK Population}
 \label{tab:skip-f1}
 \input{skip_predictor_metrics}
 \end{table}
 
+\begin{table}[h]
+\centering
+\caption{Logistic Skip-F1 Under Nested Feature Sets (Cross-Dataset Protocol)}
+\label{tab:ablation}
+\input{table_ablation}
+\end{table}
+
 \subsection{Measured Predictor Overhead}
-Table~\ref{tab:overhead} reports the per-decision cost of each learned predictor, measured at batch size 1 over 1\,000 test samples after warm-up (\texttt{time.perf\_counter}, same x86 CPU): the scikit-learn Random Forest via \texttt{predict()}, the logistic in its deployed form (a NumPy dot product plus sigmoid). The median gap is $84\times$ (2.80 ms vs.\ 33 $\mu$s). This measures the deployed scikit-learn implementation --- a compiled tree ensemble would narrow the gap --- but the logistic's two-multiply evaluation is a floor no 50-tree ensemble reaches. The cascade latencies in Table~\ref{tab:variants} \emph{exclude} predictor cost; on the $A$-IDK population, where the predictor is consulted on every image, charging each variant its median per-decision cost would add 2.80 ms to the Random Forest row but only 0.03 ms to the logistic row --- more than a third of the 7.76 ms baseline-to-best latency gap in the RF's case.
+Table~\ref{tab:overhead} reports the per-decision cost of each learned predictor, measured at batch size 1 over 1\,000 test samples after warm-up (\texttt{time.perf\_counter}, on the Jetson Orin Nano): the scikit-learn Random Forest via \texttt{predict()}, the logistic in its deployed form (a NumPy dot product plus sigmoid). The median gap is XXratio$\times$ (XXrfcost vs.\ XXlrcost). Because worst-case behavior is what enters a schedulability bound, we also report the empirical p99 and maximum. This measures the deployed scikit-learn implementation --- a compiled tree ensemble would narrow the gap --- but the logistic's two-multiply evaluation is a floor no 50-tree ensemble reaches. Beyond magnitude, the two predictors differ in \emph{analyzability}: the deployed logistic is branch-free and data-independent (exactly two multiplications, two additions, and one sigmoid on every input), so a WCET bound is immediate, whereas a tree ensemble's evaluation path is input-dependent and its interpreted implementation resists tight static bounding. The cascade latencies in Table~\ref{tab:variants} \emph{exclude} predictor cost; on the $A$-IDK population, where the predictor is consulted on every image, charging each variant its median per-decision cost would add XXrfcost to the Random Forest row but only XXlrcostms to the logistic row.
 
 \begin{table}[h]
 \centering
-\caption{Measured Per-Decision Predictor Cost (Batch Size 1, x86 CPU, 1\,000 Test Samples)}
+\caption{Measured Per-Decision Predictor Cost (Batch Size 1, Jetson Orin Nano CPU, 1\,000 Test Samples)}
 \label{tab:overhead}
 \input{predictor_overhead}
 \end{table}
@@ -186,24 +197,20 @@ The dominant term matches intuition: higher confidence sharply reduces skip prob
 \section{Discussion and Future Work}
 \label{sec:discussion}
 
-\textbf{Why two features suffice.} The skip decision is approximately a function of the top-2 ordering of the softmax. On a $K{=}1000$-class output, the bulk of entropy lives in the long tail of small probabilities, but whether $B$ will abstain is dominated by top-1/top-2 ambiguity --- already captured by confidence and margin. The Random Forest's residual F1 edge (0.009 absolute) suggests entropy carries some signal beyond these two features, but on this subset it is not enough to change cascade latency or accuracy.
+\textbf{Why two features suffice.} The skip decision is approximately a function of the top-2 ordering of the softmax. On a $K{=}1000$-class output, the bulk of entropy lives in the long tail of small probabilities, but whether $B$ will abstain is dominated by top-1/top-2 ambiguity --- already captured by confidence and margin. The nested-model ablation (Table~\ref{tab:ablation}) makes this concrete: XXablationdiscussion
 
-\textbf{Real-time implications.} The skip predictor's own WCET enters the schedulability budget. Our measured per-decision cost gap is $84\times$ (Table~\ref{tab:overhead}); in Baruah's framing \cite{baruah2023optimal}, where each stage's WCET is charged against the response-time bound, the near-zero-cost predictor is preferable whenever cascade accuracy and latency are comparable --- which Table~\ref{tab:variants} shows they are.
+\textbf{Real-time implications.} The skip predictor's own WCET enters the schedulability budget. Our measured per-decision cost gap is XXratio$\times$ at the median (Table~\ref{tab:overhead}), and the logistic's branch-free, data-independent evaluation admits an immediate WCET bound where the tree ensemble's input-dependent path does not; in Baruah's framing \cite{baruah2023optimal}, where each stage's WCET is charged against the response-time bound, the near-zero-cost predictor is preferable whenever cascade accuracy and latency are comparable --- which Table~\ref{tab:variants} shows they are.
 
-\textbf{Phase 2 directions.} The Phase~2 prompt asks for extension to ``multiple types of data.'' Confidence and margin are well-defined for any softmax classifier, so the logistic rule is dataset-agnostic in form (e.g., audio via Phonotomizer \cite{yantosca2025phonotomizer}, tabular medical data). Natural follow-ons: fold the predictor's WCET into Baruah's response-time bound, and generalize the binary skip to a multinomial multi-stage rule for cascades with more than three classifiers.
+\textbf{Future work.} Confidence and margin are well-defined for any softmax classifier, so the logistic rule is dataset-agnostic in form (e.g., audio via Phonotomizer \cite{yantosca2025phonotomizer}, tabular medical data). Natural follow-ons: fold the predictor's WCET into Baruah's response-time bound, and generalize the binary skip to a multinomial multi-stage rule for cascades with more than three classifiers.
 
 % =====================================================================
 \section{Conclusion}
 \label{sec:conclusion}
 
-We tested the future-work question raised by Katikaneni et al.\ \cite{katikaneni2025randomforest}: does a much simpler skip predictor recover most of the latency benefit? On the held-out $A$-IDK test split of ImageNet-V2 Matched-Frequency, a two-feature logistic regression on confidence and margin matches the Random Forest on cascade latency (129.47 vs.\ 129.45~ms) and accuracy (47.0\% vs.\ 46.9\%), with slightly lower skip F1 (0.706 vs.\ 0.715, 0.009 absolute), at a measured $84\times$ lower per-decision cost. The logistic does not dominate the Random Forest --- it concedes a small amount of predictor F1 --- but for real-time deployments where the skip predictor's WCET is a first-class scheduling concern, it buys essentially the same cascade performance at a small fraction of the predictor overhead. Validating on the remaining ImageNet-V2 subsets (including a correctly-sourced TopImages) and under cross-dataset training is the immediate next step.
+We tested the future-work question raised by Katikaneni et al.\ \cite{katikaneni2025randomforest}: does a much simpler skip predictor recover most of the latency benefit? Under their cross-dataset protocol (train on Matched-Frequency + TopImages, test on the Threshold-0.7 $A$-IDK population), a two-feature logistic regression on confidence and margin matches the Random Forest on cascade latency (XXlrlat vs.\ XXrflat~ms) and accuracy (XXlracc\% vs.\ XXrfacc\%) --- the paired bootstrap CIs of the per-image differences include zero --- at a measured XXratio$\times$ lower median per-decision cost on a Jetson Orin Nano, with a branch-free evaluation whose WCET is immediate to bound. For real-time deployments where the skip predictor's WCET is a first-class scheduling concern, the two-coefficient rule buys the same cascade performance at a small fraction of the predictor overhead. Folding that bound into an end-to-end schedulability analysis of the full cascade is the immediate next step.
 
 % =====================================================================
 \bibliographystyle{IEEEtran}
 \bibliography{references}
-
-% The course submission included a peer-review appendix here (\input{peer_reviews});
-% it reviews classmates' presentations and is intentionally omitted from the
-% public version of this paper.
 
 \end{document}

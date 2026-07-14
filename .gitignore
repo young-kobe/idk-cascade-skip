@@ -13,3 +13,5 @@ __pycache__/
 *.blg
 *.out
 *.synctex.gz
+
+CLAUDE.md

@@ -20,7 +20,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-from utils import DATA_DIR, FIG_DIR, REPO_ROOT, softmax_features, top1
+from utils import FIG_DIR, REPO_ROOT, load_subset, softmax_features, top1
 
 ACC_THRESHOLD = 0.65  # An IDK if max softmax < 0.65 (matches Nguyen 2024)
 
@@ -70,17 +70,15 @@ def cascade_simulate(probs_a, probs_b, probs_c, t_a, t_b, t_c, labels, skip_deci
         "accuracy": (final_pred == labels).mean(),
         "skip_rate": skipped_b.mean(),
         "latency_arr": latency,
+        "correct_arr": (final_pred == labels),
     }
 
 
 def main():
-    probs_a = np.load(DATA_DIR / "softmax_resnet18.npy")
-    probs_b = np.load(DATA_DIR / "softmax_resnet34.npy")
-    probs_c = np.load(DATA_DIR / "softmax_resnet152.npy")
-    t_a = np.load(DATA_DIR / "timing_resnet18.npy")
-    t_b = np.load(DATA_DIR / "timing_resnet34.npy")
-    t_c = np.load(DATA_DIR / "timing_resnet152.npy")
-    labels = np.load(DATA_DIR / "labels.npy")
+    d = load_subset("matched")
+    probs_a, probs_b, probs_c = d["probs_a"], d["probs_b"], d["probs_c"]
+    t_a, t_b, t_c = d["t_a"], d["t_b"], d["t_c"]
+    labels = d["labels"]
 
     feats = softmax_features(probs_a)
     conf_a = feats["confidence"]

@@ -15,6 +15,26 @@ DATA_DIR.mkdir(exist_ok=True)
 FIG_DIR.mkdir(exist_ok=True)
 
 
+def load_subset(subset: str, timing_root: Path | None = None) -> dict[str, np.ndarray]:
+    """Load the cached arrays for one ImageNet-V2 variant (data/<subset>/).
+
+    timing_root: optional alternate root for the timing_*.npy arrays, e.g.
+    data/arm to combine platform-independent softmax with timings measured on
+    an ARM board.
+    """
+    d = DATA_DIR / subset
+    t = (timing_root / subset) if timing_root is not None else d
+    return {
+        "probs_a": np.load(d / "softmax_resnet18.npy"),
+        "probs_b": np.load(d / "softmax_resnet34.npy"),
+        "probs_c": np.load(d / "softmax_resnet152.npy"),
+        "t_a": np.load(t / "timing_resnet18.npy"),
+        "t_b": np.load(t / "timing_resnet34.npy"),
+        "t_c": np.load(t / "timing_resnet152.npy"),
+        "labels": np.load(d / "labels.npy"),
+    }
+
+
 @contextmanager
 def timer():
     start = time.perf_counter()

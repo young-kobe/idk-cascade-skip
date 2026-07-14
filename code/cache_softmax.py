@@ -1,9 +1,14 @@
-"""Run pretrained ResNet-18/34/152 over an ImageNet-V2 subset and cache softmax outputs + per-image timings.
+"""Run pretrained ResNet-18/34/152 over an ImageNet-V2 variant and cache softmax outputs + per-image timings.
 
 Usage:
-    python cache_softmax.py --subset top --n 10000
+    python3 cache_softmax.py --subset matched --cpu
+    python3 cache_softmax.py --subset thr07 --cpu --outdir ../data/arm/thr07   # e.g. on an ARM board
 
-Outputs (in ../data/):
+Each variant is downloaded as the canonical per-variant tarball from the
+vaishaal/ImageNetV2 Hugging Face dataset repo (the original Recht et al.
+release files), so the variant identity is exact by construction.
+
+Outputs (in ../data/<subset>/ unless --outdir is given):
     softmax_resnet18.npy   shape (N, 1000)
     softmax_resnet34.npy   shape (N, 1000)
     softmax_resnet152.npy  shape (N, 1000)
@@ -16,6 +21,7 @@ Outputs (in ../data/):
 from __future__ import annotations
 
 import argparse
+import tarfile
 import time
 from pathlib import Path
 
@@ -27,6 +33,18 @@ from tqdm import tqdm
 
 from utils import DATA_DIR, device
 
+# Canonical per-variant release files of Recht et al. (2019), mirrored on the
+# Hugging Face Hub. Downloading the exact file makes the variant identity
+# certain; earlier revisions of this script loaded via `datasets` repos whose
+# variant labeling had drifted (the old "top" alias actually served
+# Matched-Frequency data).
+HF_REPO = "vaishaal/ImageNetV2"
+VARIANT_FILES = {
+    "matched": "imagenetv2-matched-frequency.tar.gz",
+    "top":     "imagenetv2-top-images.tar.gz",
+    "thr07":   "imagenetv2-threshold0.7.tar.gz",
+}
+
 MODEL_FACTORIES = {
     "resnet18":  (models.resnet18,  models.ResNet18_Weights.IMAGENET1K_V1),
     "resnet34":  (models.resnet34,  models.ResNet34_Weights.IMAGENET1K_V1),
@@ -35,72 +53,39 @@ MODEL_FACTORIES = {
 
 
 def load_imagenetv2(subset: str, n: int):
-    """Load N images + labels from ImageNet-V2 via Hugging Face datasets.
+    """Return a sorted list of (image_path, label) for one ImageNet-V2 variant.
 
-    Tries several known repositories in order. Dataset structure on HF has
-    shifted over time — vaishaal/ImageNetV2 used to expose per-subset configs
-    (topimages / matched-frequency / threshold0.7) but now only exposes
-    'default'. We try modern timm-hosted subsets first, then fall back.
+    Downloads the canonical per-variant tarball from vaishaal/ImageNetV2 and
+    extracts it under the Hugging Face cache. Tarball layout:
+    imagenetv2-<variant>-format-val/<class_id>/<image>.jpeg, class_id 0-999.
+    Sorting by (label, filename) makes the image order deterministic across
+    machines, so softmax arrays cached on one host align with timing arrays
+    cached on another (e.g. ARM).
     """
-    from datasets import load_dataset
+    from huggingface_hub import hf_hub_download
 
-    # Subset alias -> ordered list of (repo_id, config, split) candidates.
-    #
-    # WARNING: clip-benchmark/wds_imagenetv2 serves the MATCHED-FREQUENCY variant,
-    # not TopImages — so the "top" alias below silently yields matched-frequency
-    # data (this is what the cached data/ arrays contain; standalone top-1
-    # accuracies confirm it). Follow-up: point "top" at the per-variant
-    # vaishaal/ImageNetV2 release files and re-cache (~2 CPU-hours).
-    candidates = {
-        "top": [
-            ("clip-benchmark/wds_imagenetv2", None, "test"),
-            ("vaishaal/ImageNetV2", "default", "test"),
-        ],
-        "matched": [
-            ("vaishaal/ImageNetV2", "default", "test"),
-        ],
-        "threshold": [
-            ("vaishaal/ImageNetV2", "default", "test"),
-        ],
-    }
+    tar_path = Path(hf_hub_download(HF_REPO, VARIANT_FILES[subset], repo_type="dataset"))
+    extract_root = tar_path.parent / f"{VARIANT_FILES[subset]}.extracted"
+    if not extract_root.exists():
+        print(f"Extracting {tar_path.name} ...")
+        tmp = extract_root.with_suffix(".tmp")
+        with tarfile.open(tar_path) as tf:
+            tf.extractall(tmp)
+        tmp.rename(extract_root)
 
-    last_err = None
-    for repo, cfg, split in candidates[subset]:
-        try:
-            print(f"Trying {repo} (config={cfg}, split={split}) ...")
-            if cfg is None:
-                ds = load_dataset(repo, split=split, streaming=False)
-            else:
-                ds = load_dataset(repo, cfg, split=split, streaming=False)
-            print(f"  loaded {len(ds)} examples; columns={ds.column_names}")
-            break
-        except Exception as e:  # noqa: BLE001
-            print(f"  failed: {e}")
-            last_err = e
-            ds = None
-
-    if ds is None:
-        raise RuntimeError(f"All candidate ImageNet-V2 sources failed: {last_err}")
-
+    items = []
+    for class_dir in extract_root.glob("*/*"):
+        if not (class_dir.is_dir() and class_dir.name.isdigit()):
+            continue
+        lbl = int(class_dir.name)
+        for img_path in class_dir.iterdir():
+            items.append((img_path, lbl))
+    if not items:
+        raise RuntimeError(f"No images found under {extract_root}")
+    items.sort(key=lambda t: (t[1], t[0].name))
     if n is not None:
-        ds = ds.select(range(min(n, len(ds))))
-    return ds
-
-
-def get_image_and_label(ex: dict):
-    """Robust accessor over slightly different ImageNet-V2 schemas.
-
-    Different HF repos use different field names: 'image' vs 'img' vs 'jpg',
-    'label' vs 'cls' vs 'labels'. Normalize here so the rest of the script
-    doesn't care.
-    """
-    img = ex.get("image") or ex.get("img") or ex.get("jpg") or ex.get("webp") or ex.get("png")
-    lbl = ex.get("label")
-    if lbl is None:
-        lbl = ex.get("cls")
-    if lbl is None:
-        lbl = ex.get("labels")
-    return img, int(lbl)
+        items = items[:n]
+    return items
 
 
 def make_transform(weights):
@@ -125,16 +110,11 @@ def run_model(model_name: str, ds, batch_size: int = 1, force_cpu: bool = False)
     for _ in range(50):
         _ = model(dummy)
 
-    from io import BytesIO
     from PIL import Image
 
     for i in tqdm(range(N), desc=model_name):
-        ex = ds[i]
-        img, lbl = get_image_and_label(ex)
-        if isinstance(img, (bytes, bytearray)):
-            img = Image.open(BytesIO(img))
-        if hasattr(img, "convert"):
-            img = img.convert("RGB")
+        img_path, lbl = ds[i]
+        img = Image.open(img_path).convert("RGB")
         x = tfm(img).unsqueeze(0).to(dev)
         labels[i] = lbl
 
@@ -154,13 +134,19 @@ def run_model(model_name: str, ds, batch_size: int = 1, force_cpu: bool = False)
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--subset", default="top", choices=["top", "matched", "threshold"])
+    parser.add_argument("--subset", default="matched", choices=sorted(VARIANT_FILES))
     parser.add_argument("--n", type=int, default=10000)
     parser.add_argument("--models", nargs="+",
                         default=["resnet18", "resnet34", "resnet152"])
     parser.add_argument("--cpu", action="store_true",
                         help="Force CPU even if CUDA is available (recommended for paper).")
+    parser.add_argument("--outdir", type=Path, default=None,
+                        help="Output directory (default ../data/<subset>). "
+                             "Use e.g. ../data/arm/<subset> when caching timings on another platform.")
     args = parser.parse_args()
+
+    outdir = args.outdir if args.outdir is not None else DATA_DIR / args.subset
+    outdir.mkdir(parents=True, exist_ok=True)
 
     dev = torch.device("cpu") if args.cpu else device()
     print(f"Device: {dev}")
@@ -170,15 +156,16 @@ def main():
     labels_saved = False
     for model_name in args.models:
         softmax, timings, labels = run_model(model_name, ds, force_cpu=args.cpu)
-        np.save(DATA_DIR / f"softmax_{model_name}.npy", softmax)
-        np.save(DATA_DIR / f"timing_{model_name}.npy", timings)
+        np.save(outdir / f"softmax_{model_name}.npy", softmax)
+        np.save(outdir / f"timing_{model_name}.npy", timings)
         if not labels_saved:
-            np.save(DATA_DIR / "labels.npy", labels)
+            np.save(outdir / "labels.npy", labels)
             labels_saved = True
-        print(f"[{model_name}] mean={timings.mean()*1000:.2f} ms  "
+        acc = (softmax.argmax(axis=1) == labels).mean()
+        print(f"[{model_name}] top-1={acc:.3f}  mean={timings.mean()*1000:.2f} ms  "
               f"p99={np.percentile(timings, 99)*1000:.2f} ms")
 
-    print(f"Saved arrays to {DATA_DIR}")
+    print(f"Saved arrays to {outdir}")
 
 
 if __name__ == "__main__":
