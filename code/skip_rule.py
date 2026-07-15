@@ -11,10 +11,10 @@ entire test-subset A-IDK population is used for evaluation.
 continuity with the course version of this work).
 
 --timing-root DIR sources the test subset's timing_*.npy from DIR/thr07
-instead of data/thr07, so softmax cached on x86 can be combined with per-image
-timings measured on an ARM board. The predictor-overhead profiling always runs
-on the *current* host: run this script on the board itself for ARM overhead
-numbers.
+instead of data/thr07, so platform-independent softmax can be combined with
+per-image timings measured on another machine. The predictor-overhead
+profiling always runs on the *current* host (see --skip-overhead): run this
+script on the deployment target for its overhead numbers.
 
 Variants:
   1. Baseline (no skip)
@@ -25,9 +25,8 @@ Variants:
 Outputs (cross-dataset mode):
   figures/variant_comparison.pdf
   paper/table_variants.tex
-  paper/skip_predictor_metrics.tex
-  paper/table_ablation.tex
-  paper/predictor_overhead.tex
+  paper/skip_predictor_metrics.tex   (RF baseline + logistic feature ablation)
+  paper/predictor_overhead.tex       (host-measured; see --skip-overhead)
   paper/logistic_coefficients.tex
   paper/paired_diff.tex
 """
@@ -150,7 +149,7 @@ def fmt_ci(point, lo, hi, prec=2):
 # Cross-dataset protocol (default)
 # ---------------------------------------------------------------------------
 
-def run_cross_dataset(timing_root):
+def run_cross_dataset(timing_root, skip_overhead=False):
     train = [prep(s) for s in TRAIN_SUBSETS]
     test = prep(TEST_SUBSET, timing_root)
 
@@ -180,9 +179,9 @@ def run_cross_dataset(timing_root):
     metrics["logistic"]["f1_ci"] = f1_ci(y_test, lr_pred)
     print(json.dumps(metrics, indent=2))
 
-    write_predictor_metrics(metrics)
-    write_ablation(train, test)
-    profile_overhead(rf, lr, X_rf_test, X_lr_test)
+    write_predictor_table(train, test, metrics["rf"])
+    if not skip_overhead:
+        profile_overhead(rf, lr, X_rf_test, X_lr_test)
     write_coefficients(lr)
 
     # Cascade evaluation on the full A-IDK population of the test subset.
@@ -219,33 +218,25 @@ def run_cross_dataset(timing_root):
         print(f"w_{name:<8} = {w:+.3f}")
 
 
-def write_predictor_metrics(metrics):
-    out = REPO_ROOT / "paper" / "skip_predictor_metrics.tex"
-    with out.open("w") as f:
-        f.write("\\begin{tabular}{lccc}\n\\toprule\n")
-        f.write("Predictor & Precision & Recall & F1 \\\\\n\\midrule\n")
-        for key, label in [("rf", "Random Forest"), ("logistic", "\\textbf{Logistic (ours)}")]:
-            mm = metrics[key]
-            f.write(f"{label} & {mm['precision']:.3f} & {mm['recall']:.3f} & "
-                    f"{fmt_ci(mm['f1'], *mm['f1_ci'], prec=3)} \\\\\n")
-        f.write("\\bottomrule\n\\end{tabular}\n")
-
-
-def write_ablation(train, test):
-    """Logistic regression over nested feature sets: the feature-selection evidence."""
+def write_predictor_table(train, test, rf_metrics):
+    """One merged table: the RF baseline plus the logistic nested-feature
+    ablation (the feature-selection evidence), same columns throughout."""
     m = test["idk_a"]
     y_train = np.concatenate([d["skip_labels"][d["idk_a"]] for d in train])
     y_test = test["skip_labels"][m]
     sets = [
-        (["confidence"],                      "\\{conf\\}"),
-        (["confidence", "margin"],            "\\{conf, margin\\}"),
-        (["confidence", "margin", "entropy"], "\\{conf, margin, entropy\\}"),
+        (["confidence"],                      "Logistic \\{conf\\}"),
+        (["confidence", "margin"],            "\\textbf{Logistic \\{conf, margin\\} (ours)}"),
+        (["confidence", "margin", "entropy"], "Logistic \\{conf, margin, entropy\\}"),
     ]
-    out = REPO_ROOT / "paper" / "table_ablation.tex"
-    print("\n=== Feature ablation (logistic) ===")
+    out = REPO_ROOT / "paper" / "skip_predictor_metrics.tex"
+    print("\n=== Predictor quality + feature ablation ===")
     with out.open("w") as f:
         f.write("\\begin{tabular}{lccc}\n\\toprule\n")
-        f.write("Features & Precision & Recall & F1 \\\\\n\\midrule\n")
+        f.write("Predictor & Precision & Recall & F1 \\\\\n\\midrule\n")
+        f.write(f"RF \\{{conf, entropy, margin\\}} & {rf_metrics['precision']:.3f} & "
+                f"{rf_metrics['recall']:.3f} & "
+                f"{fmt_ci(rf_metrics['f1'], *rf_metrics['f1_ci'], prec=3)} \\\\\n")
         for names, label in sets:
             X_train = np.concatenate([feature_matrix(d, names, d["idk_a"]) for d in train])
             X_test = feature_matrix(test, names, m)
@@ -414,12 +405,15 @@ def main():
     parser.add_argument("--timing-root", type=Path, default=None,
                         help="Alternate root for the test subset's timing_*.npy "
                              "(e.g. ../data/arm for ARM-measured timings).")
+    parser.add_argument("--skip-overhead", action="store_true",
+                        help="Do not regenerate predictor_overhead.tex (keeps "
+                             "board-measured numbers when re-running tables on another host).")
     args = parser.parse_args()
 
     if args.single_subset:
         run_single_subset()
     else:
-        run_cross_dataset(args.timing_root)
+        run_cross_dataset(args.timing_root, args.skip_overhead)
 
 
 if __name__ == "__main__":

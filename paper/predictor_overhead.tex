@@ -1,8 +1,9 @@
-\begin{tabular}{lccc}
+\begin{tabular}{lccccc}
 \toprule
-Predictor & Mean ($\mu$s) & Median ($\mu$s) & Relative \\
+Predictor & Mean & Median & p99 & Max & Relative \\
+ & ($\mu$s) & ($\mu$s) & ($\mu$s) & ($\mu$s) & (median) \\
 \midrule
-Random Forest & 3278.1 & 2795.6 & $84\times$ \\
-\textbf{Logistic (ours)} & 35.2 & 33.2 & $1\times$ \\
+Random Forest & 3819.3 & 3803.7 & 4036.4 & 6365.5 & $205\times$ \\
+\textbf{Logistic (ours)} & 18.8 & 18.6 & 25.4 & 48.0 & $1\times$ \\
 \bottomrule
 \end{tabular}

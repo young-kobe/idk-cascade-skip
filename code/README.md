@@ -2,8 +2,9 @@
 
 Reproduces the Nguyen et al. (RTSS 2024) threshold sweep and evaluates a
 lightweight two-feature logistic skip predictor against a re-implementation of
-the Random Forest of Katikaneni et al. (RTSS 2025) on ImageNet-V2
-Matched-Frequency.
+the Random Forest of Katikaneni et al. (RTSS 2025), under their cross-dataset
+protocol (train on ImageNet-V2 Matched-Frequency + TopImages, test on
+Threshold-0.7), measured on a Jetson Orin Nano.
 
 ## Setup
 
@@ -11,43 +12,53 @@ Matched-Frequency.
 pip3 install -r requirements.txt
 ```
 
-`torch`, `torchvision`, and `datasets` only matter for `cache_softmax.py`. The
-analysis scripts (`threshold_sweep.py`, `skip_rule.py`) only need numpy,
-scikit-learn, and matplotlib.
+`torch`, `torchvision`, and `huggingface_hub` only matter for
+`cache_softmax.py`. The analysis scripts (`threshold_sweep.py`,
+`skip_rule.py`) only need numpy, scipy, scikit-learn, and matplotlib.
 
 ## Run
 
-`../data/` ships pre-cached, so the analysis reproduces in seconds:
+`../data/` ships pre-cached (board-measured), so the analysis reproduces in
+seconds — the repo-root Makefile is the entry point:
 
 ```bash
-python3 threshold_sweep.py   # threshold sweep table + figure (full 10k set)
-python3 skip_rule.py         # RF + logistic training, variant/F1/overhead tables
+make -C .. sweep    # threshold sweep table + figure (full 10k Matched-Frequency)
+make -C .. rules    # cross-dataset RF + logistic training, all paper tables
 ```
 
-`bash run.sh` runs everything end-to-end, including the caching step —
-**~2 h CPU** and it overwrites the cached timings, so it skips step 1 when
-`../data/` already exists.
+`skip_rule.py` flags:
 
-`cache_softmax.py --subset top --n 10000 --cpu` runs ResNet-18/34/152 over
-ImageNet-V2 and saves softmax probs + per-image timings. Note the warning in
-its loader: the `top` alias currently resolves to a Hugging Face repo that
-serves the **Matched-Frequency** variant (verified via standalone top-1
-accuracies); pointing it at true per-variant TopImages files is a noted
-follow-up.
+- `--single-subset` — legacy within-Matched-Frequency 70/30 protocol,
+  10 random splits, printed only.
+- `--timing-root DIR` — source the test subset's `timing_*.npy` from
+  `DIR/thr07` (combine platform-independent softmax with timings from
+  another machine).
+- `--skip-overhead` — don't overwrite `paper/predictor_overhead.tex`; the
+  overhead table must be measured on the deployment target, and the committed
+  numbers are from the Jetson Orin Nano.
 
-## Headline results (Matched-Frequency, held-out A-IDK test split, x86 CPU)
+`cache_softmax.py --subset {matched,top,thr07} --cpu` downloads the canonical
+per-variant ImageNet-V2 release tarball (vaishaal/ImageNetV2 on the Hugging
+Face Hub), runs ResNet-18/34/152 over it, and saves softmax probs + per-image
+timings to `../data/<subset>/` (`--outdir` overrides, e.g. for per-platform
+timing sets). Variant identity is verified by the standalone top-1 accuracies
+it prints. `arm_bootstrap.sh` is the self-contained board pipeline used to
+produce the committed data (deps → cache all three subsets → full analysis).
+
+## Headline results (cross-dataset, thr07 A-IDK population, Jetson Orin Nano CPU)
 
 | Variant | Latency (ms) | Accuracy | Skip-F1 |
 |---|---|---|---|
-| Baseline (no skip) | 137.21 | 0.464 | — |
-| Static τ=0.3 (Nguyen 2024) | 130.44 | 0.467 | — |
-| Random Forest (Katikaneni 2025) | 129.45 | 0.469 | 0.715 |
-| **Logistic, 2-feature (ours)** | 129.47 | 0.470 | 0.706 |
+| Baseline (no skip) | 374.86 | 0.549 | — |
+| Static τ=0.3 (Nguyen 2024) | 363.65 | 0.552 | — |
+| Random Forest (Katikaneni 2025) | 363.83 | 0.553 | 0.682 |
+| **Logistic, 2-feature (ours)** | 365.28 | 0.553 | 0.662 |
 
-Measured per-decision predictor cost (batch 1, post-warm-up): RF median
-2.80 ms vs. logistic 33 µs — an **84×** gap.
+Measured per-decision predictor cost (batch 1, post-warm-up, on-board): RF
+median 3.80 ms vs. logistic 19 µs — a **205×** gap, larger than the RF's
+entire paired cascade-latency advantage (≤ 2.6 ms).
 
-Trained logistic: `logit P(skip) = 1.787 − 5.111·conf + 1.086·margin`.
+Trained logistic: `logit P(skip) = 1.841 − 5.481·conf + 1.785·margin`.
 
 The skip label follows both prior papers: skip is correct iff the middle
 classifier itself would output IDK (`conf_B < 0.65`).
@@ -56,9 +67,10 @@ classifier itself would output IDK (`conf_B < 0.65`).
 
 | file | purpose |
 |---|---|
-| `utils.py` | shared helpers (paths, feature extraction, lazy torch import) |
-| `cache_softmax.py` | run pretrained models, cache softmax + timings |
+| `utils.py` | shared helpers (paths, per-subset loading, feature extraction) |
+| `cache_softmax.py` | download an ImageNet-V2 variant, run models, cache softmax + timings |
 | `threshold_sweep.py` | reproduce the Nguyen 2024 sweep protocol |
-| `skip_rule.py` | train + evaluate RF and logistic skip rules, profile predictor cost |
+| `skip_rule.py` | train + evaluate skip rules, bootstrap CIs, ablation, overhead profile |
+| `arm_bootstrap.sh` | self-contained pipeline for an ARM board |
+| `run.sh` | end-to-end driver (cache-if-missing + analysis) |
 | `requirements.txt` | Python deps |
-| `run.sh` | end-to-end driver |
